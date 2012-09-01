@@ -138,7 +138,9 @@ createGtkFromViewData (Node {
 	where
 	newChildOf parent (Node {rootLabel = adata, subForest = children}) = do
 		(gtk, me) <- single adata
-		Gtk.containerAdd (Gtk.castToContainer parent) gtk
+		-- Currently acting like VBox. Need better layout algorithm
+		y <- length <$> Gtk.containerGetChildren (Gtk.castToContainer parent)
+		Gtk.tableAttachDefaults (Gtk.castToTable parent) gtk 0 1 y (y+1)
 		children' <- mapM (newChildOf gtk) children
 		return $ Node {rootLabel = (adata, me), subForest = children'}
 
