@@ -1,4 +1,5 @@
 import Prelude hiding (lookup, mapM, mapM_)
+import Control.Monad hiding (mapM, mapM_)
 import qualified Data.List (lookup)
 import Data.Hashable
 import Data.Map (Map)
@@ -9,6 +10,7 @@ import Data.Tree
 import Data.Traversable
 import Data.Foldable
 import Control.Applicative
+import Data.IORef
 
 type Address = [String]
 
@@ -96,15 +98,22 @@ instance Updatable (GUI a) where
 
 aView = Node {
 		rootLabel = Grid {
-			text = const "Some Title",
-			rows = 1,
+			text = const "Test App",
+			rows = 2,
 			cols = 1
 		},
 		subForest = [
 			Node {
 				rootLabel = Button {
 					_id = "toggler",
-					text = fromMaybe "Nothing" . lookup "buttonLabel" . AssocList
+					text = fromMaybe "" . lookup "togglerLabel" . AssocList
+				},
+				subForest = []
+			},
+			Node {
+				rootLabel = Button {
+					_id = "adder",
+					text = const "Add item!"
 				},
 				subForest = []
 			}
@@ -144,9 +153,16 @@ main = do
 	Gtk.initGUI
 	gui@(GUI _ (Node {rootLabel = (_, window)})) <- createGtkFromViewData aView
 	display window
+
 	let Just (_,toggler) = gui `getElementById` "toggler"
+	guiRef <- newIORef gui
 	Gtk.on (Gtk.castToButton $ unwrap toggler) Gtk.buttonActivated $ do
-		-- TODO: don't throw away the new GUI
-		_ <- update gui (ReplaceMessage ["buttonLabel"] (StringItem "hello"))
-		return ()
+		gui@(GUI ctx _) <- readIORef guiRef
+		let txt = case lookup "togglerLabel" (AssocList ctx) of
+			Just "on" -> "off"
+			_ -> "on"
+		writeIORef guiRef =<< update gui (ReplaceMessage ["togglerLabel"] (StringItem txt))
+
+	Gtk.on (unwrap window) Gtk.unrealize $ do
+		Gtk.mainQuit
 	Gtk.mainGUI
