@@ -147,8 +147,9 @@ createGtkFromViewData (Node {
 	single (Grid {rows = rows, cols = cols}) = do
 		t <- fmap Gtk.castToWidget $ Gtk.tableNew rows cols False
 		return (t, nopWidget t)
-	single (Button {text = text}) = do
+	single (Button {_id = _id, text = text}) = do
 		b <- Gtk.buttonNewWithLabel $ text [] -- TODO
+		Gtk.widgetSetName b _id
 		return (Gtk.castToWidget b, gtkButtonToWidget b)
 
 main = do
