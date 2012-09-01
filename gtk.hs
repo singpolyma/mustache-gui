@@ -47,6 +47,9 @@ data AttributeData = Grid {
 	Button {
 		_id :: String,
 		text :: Templatable String
+	} |
+	Label {
+		text :: Templatable String
 	}
 
 data Widget a = Widget {
@@ -70,10 +73,16 @@ gtkWindowToWidget w = Widget {
 		unwrap = Gtk.castToWidget w
 	}
 
-
 gtkButtonToWidget :: (Gtk.ButtonClass o) => o -> Widget Gtk.Widget
 gtkButtonToWidget w = Widget {
 		setText = Gtk.buttonSetLabel w,
+		display = Gtk.widgetShowAll w,
+		unwrap = Gtk.castToWidget w
+	}
+
+gtkLabelToWidget :: (Gtk.LabelClass o) => o -> Widget Gtk.Widget
+gtkLabelToWidget w = Widget {
+		setText = Gtk.labelSetText w,
 		display = Gtk.widgetShowAll w,
 		unwrap = Gtk.castToWidget w
 	}
@@ -93,6 +102,8 @@ instance Updatable (GUI a) where
 		updateWidget pair@(Grid {text = text}, w) =
 			setText w (text ctx') >> return pair
 		updateWidget pair@(Button {text = text}, w) =
+			setText w (text ctx') >> return pair
+		updateWidget pair@(Label {text = text}, w) =
 			setText w (text ctx') >> return pair
 		ctx' = (a,s) : ctx
 
@@ -116,6 +127,21 @@ aView = Node {
 					text = const "Add item!"
 				},
 				subForest = []
+			},
+			Node {
+				rootLabel = Grid {
+					text = const "",
+					rows = 3,
+					cols = 1
+				},
+				subForest = [
+					Node {
+						rootLabel = Label {
+							text = const "outer"
+						},
+						subForest = []
+					}
+				]
 			}
 		]
 	}
@@ -151,6 +177,9 @@ createGtkFromViewData (Node {
 		b <- Gtk.buttonNewWithLabel $ text [] -- TODO
 		Gtk.widgetSetName b _id
 		return (Gtk.castToWidget b, gtkButtonToWidget b)
+	single (Label {text = text}) = do
+		l <- Gtk.labelNew $ Just $ text [] -- TODO
+		return (Gtk.castToWidget l, gtkLabelToWidget l)
 
 main = do
 	Gtk.initGUI
