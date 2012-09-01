@@ -1,0 +1,28 @@
+Frame {
+	title: Test App
+
+	Button {
+		id: toggler
+		text: {{togglerLabel}}
+	}
+
+	Button {
+		id: adder
+		text: Add Item!
+	}
+
+	Frame {
+		layout: grid
+
+		Label { text: outer }
+
+		{{#items}}
+			Label {
+				text: hello {{text}}man
+			}
+			Button {
+				text: button text
+			}
+		{{/items}}
+	}
+}
