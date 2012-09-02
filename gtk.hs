@@ -50,6 +50,9 @@ data AttributeData = Grid {
 	} |
 	Label {
 		text :: Templatable String
+	} |
+	Section {
+		variable :: String
 	}
 
 data Widget a = Widget {
@@ -105,6 +108,7 @@ instance Updatable (GUI a) where
 			setText w (text ctx') >> return pair
 		updateWidget pair@(Label {text = text}, w) =
 			setText w (text ctx') >> return pair
+		updateWidget pair = return pair
 		ctx' = (a,s) : ctx
 
 aView = Node {
@@ -140,6 +144,26 @@ aView = Node {
 							text = const "outer"
 						},
 						subForest = []
+					},
+					Node {
+						rootLabel = Section {
+							variable = "items"
+						},
+						subForest = [
+							Node {
+								rootLabel = Label {
+									text = (\ctx -> "hello " ++ (fromMaybe "" $ lookup "togglerLabel" $ AssocList ctx) ++ "man")
+								},
+								subForest = []
+							},
+							Node {
+								rootLabel = Button {
+									_id = "",
+									text = const "button text"
+								},
+								subForest = []
+							}
+						]
 					}
 				]
 			}
@@ -163,23 +187,30 @@ createGtkFromViewData (Node {
 		]}
 	where
 	newChildOf parent (Node {rootLabel = adata, subForest = children}) = do
-		(gtk, me) <- single adata
-		-- Currently acting like VBox. Need better layout algorithm
-		y <- length <$> Gtk.containerGetChildren (Gtk.castToContainer parent)
-		Gtk.tableAttachDefaults (Gtk.castToTable parent) gtk 0 1 y (y+1)
-		children' <- mapM (newChildOf gtk) children
-		return $ Node {rootLabel = (adata, me), subForest = children'}
+		s <- single adata
+		case s of
+			Just (gtk, me) -> do
+				-- Currently acting like VBox. Need better layout algorithm
+				y <- length <$> Gtk.containerGetChildren (Gtk.castToContainer parent)
+				Gtk.tableAttachDefaults (Gtk.castToTable parent) gtk 0 1 y (y+1)
+				children' <- mapM (newChildOf gtk) children
+				return $ Node {rootLabel = (adata, me), subForest = children'}
+			_ -> do
+				-- TODO: section children need to work properly
+				children' <- mapM (newChildOf parent) children
+				return $ Node {rootLabel = (adata, nopWidget (error "cannot unwrap pseudo-widget")), subForest = children'}
 
 	single (Grid {rows = rows, cols = cols}) = do
 		t <- fmap Gtk.castToWidget $ Gtk.tableNew rows cols False
-		return (t, nopWidget t)
+		return $ Just (t, nopWidget t)
 	single (Button {_id = _id, text = text}) = do
 		b <- Gtk.buttonNewWithLabel $ text [] -- TODO
 		Gtk.widgetSetName b _id
-		return (Gtk.castToWidget b, gtkButtonToWidget b)
+		return $ Just (Gtk.castToWidget b, gtkButtonToWidget b)
 	single (Label {text = text}) = do
 		l <- Gtk.labelNew $ Just $ text [] -- TODO
-		return (Gtk.castToWidget l, gtkLabelToWidget l)
+		return $ Just (Gtk.castToWidget l, gtkLabelToWidget l)
+	single (Section {}) = return Nothing
 
 main = do
 	Gtk.initGUI
