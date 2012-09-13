@@ -1,4 +1,6 @@
-import Prelude hiding (lookup, mapM, mapM_)
+module Main where
+
+import Prelude hiding (lookup, mapM, mapM_, concat)
 import Control.Monad hiding (mapM, mapM_)
 import qualified Data.List (lookup)
 import Data.Hashable
@@ -64,10 +66,16 @@ data AttributeData = Grid {
 	}
 
 data Widget a = Widget {
-		setText :: (String -> IO ()),
-		display :: IO (),
-		unwrap :: a
+		setText  :: (String -> IO ()),
+		display  :: IO (),
+		destroy  :: IO (),
+		addChild :: (Widget a -> IO ()),
+		unwrap   :: a
 	}
+
+class BuildFromAttributeTree a where
+	-- Needs to process a whole tree, because children may need to be added to containers
+	buildFromAttributeTree :: Context -> Tree AttributeData -> IO (Tree (AttributeData, Widget a))
 
 data GUI a = GUI Context (Tree (AttributeData, Widget a))
 
@@ -79,30 +87,48 @@ getElementById (GUI _ tree) k = find (match . fst) tree
 
 gtkWindowToWidget :: (Gtk.WindowClass o) => o -> Widget Gtk.Widget
 gtkWindowToWidget w = Widget {
-		setText = (\s -> Gtk.set w [ Gtk.windowTitle Gtk.:= s ]),
-		display = Gtk.widgetShowAll w,
-		unwrap = Gtk.castToWidget w
+		setText  = (\s -> Gtk.set w [ Gtk.windowTitle Gtk.:= s ]),
+		display  = Gtk.widgetShowAll w,
+		destroy  = Gtk.widgetDestroy w,
+		addChild = Gtk.containerAdd w . unwrap,
+		unwrap   = Gtk.castToWidget w
 	}
 
 gtkButtonToWidget :: (Gtk.ButtonClass o) => o -> Widget Gtk.Widget
 gtkButtonToWidget w = Widget {
-		setText = Gtk.buttonSetLabel w,
-		display = Gtk.widgetShowAll w,
-		unwrap = Gtk.castToWidget w
+		setText  = Gtk.buttonSetLabel w,
+		display  = Gtk.widgetShowAll w,
+		destroy  = Gtk.widgetDestroy w,
+		addChild = Gtk.containerAdd w . unwrap,
+		unwrap   = Gtk.castToWidget w
 	}
 
 gtkLabelToWidget :: (Gtk.LabelClass o) => o -> Widget Gtk.Widget
-gtkLabelToWidget w = Widget {
-		setText = Gtk.labelSetText w,
-		display = Gtk.widgetShowAll w,
-		unwrap = Gtk.castToWidget w
+gtkLabelToWidget w = (nopWidget (Gtk.castToWidget w)) {
+		setText  = Gtk.labelSetText w,
+		display  = Gtk.widgetShowAll w,
+		destroy  = Gtk.widgetDestroy w
+	}
+
+gtkTableToWidget :: (Gtk.TableClass o) => o -> Widget Gtk.Widget
+gtkTableToWidget w = (nopWidget (Gtk.castToWidget w)) {
+		display  = Gtk.widgetShowAll w,
+		destroy  = Gtk.widgetDestroy w,
+		addChild = (\c -> do
+			-- Currently acting like VBox. Need better layout algorithm
+			y <- length <$> Gtk.containerGetChildren w
+			Gtk.tableAttachDefaults w (unwrap c) 0 1 y (y+1)
+			display c
+		)
 	}
 
 nopWidget :: o -> Widget o
 nopWidget w = Widget {
-		setText = const $ return (),
-		display = return (),
-		unwrap = w
+		setText  = const $ return (),
+		display  = return (),
+		destroy  = return (),
+		addChild = const $ return (),
+		unwrap   = w
 	}
 
 listInsertAt :: Int -> a -> [a] -> [a]
@@ -111,7 +137,7 @@ listInsertAt idx v xs = before ++ v:after
 	(before, after) = splitAt idx xs
 
 -- Full-on bruteforce updates
-instance Updatable (GUI a) where
+instance (BuildFromAttributeTree a) => Updatable (GUI a) where
 	update (GUI ctx tree) (ListInsertMessage [a] idx item) =
 		GUI ctx' <$> mapM updateWidget tree
 		where
@@ -127,18 +153,27 @@ instance Updatable (GUI a) where
 			) a ctx
 
 	update (GUI ctx tree) (ReplaceMessage [a] item) =
-		GUI ctx' <$> mapM updateWidget tree
+		GUI ctx' <$> unfoldTreeM updateWidget (error "Toplevel has no parent", tree)
 		where
-		updateWidget pair@(Grid {text = text}, w) =
-			setText w (text ctx') >> return pair
-		updateWidget pair@(Button {text = text}, w) =
-			setText w (text ctx') >> return pair
-		updateWidget pair@(Label {text = text}, w) =
-			setText w (text ctx') >> return pair
-		updateWidget pair@(Section {variable = v, chunk = c}, w) = do
-			-- TODO
-			print $ "Section for " ++ v ++ "(" ++ show (lookup v ctx') ++ ")"
-			return pair
+		updateWidget (_, Node pair@(Grid {text = text}, w) cs) =
+			setText w (text ctx') >> return (pair, map ((,)w) cs)
+		updateWidget (_, Node pair@(Button {text = text}, w) cs) =
+			setText w (text ctx') >> return (pair, map ((,)w) cs)
+		updateWidget (_, Node pair@(Label {text = text}, w) cs) =
+			setText w (text ctx') >> return (pair, map ((,)w) cs)
+		updateWidget (parent, Node pair@(Section {variable = v, chunk = c}, w) cs) = do
+			mapM_ (destroy . snd . rootLabel) cs
+			cs' <- case lookup v ctx' of
+				Just (ListCtx xs) ->
+					fmap concat $ mapM (\x ->
+						mapM (\atree -> do
+							wtree@(Node {rootLabel = (_,w)}) <- buildFromAttributeTree (Map.union x ctx') atree
+							addChild parent w
+							return wtree
+						) c
+					) xs
+				_ -> return [] -- TODO ?
+			return (pair, map ((,)parent) cs')
 		ctx' = Map.insert a item ctx
 
 aView = Node {
@@ -165,7 +200,7 @@ aView = Node {
 			Node {
 				rootLabel = Grid {
 					text = const "",
-					rows = 3,
+					rows = 5,
 					cols = 1
 				},
 				subForest = [
@@ -201,46 +236,46 @@ aView = Node {
 		]
 	}
 
-createGtkFromViewData :: Tree AttributeData -> IO (GUI Gtk.Widget)
-createGtkFromViewData (Node {
-                       rootLabel = g@(Grid {text=title, rows=rows, cols=cols}),
-                       subForest = children}) = do
-	toplevel <- Gtk.windowNew
-	Gtk.set toplevel [ Gtk.windowTitle Gtk.:= title mempty ] -- TODO
-
-	toplevelTable <- fmap Gtk.castToWidget $ Gtk.tableNew rows cols False
-	Gtk.containerAdd toplevel toplevelTable
-
-	children' <- mapM (newChildOf toplevelTable) children
-
-	return $ GUI mempty $ Node {rootLabel = (g,gtkWindowToWidget toplevel), subForest = [
-			Node {rootLabel = (g,nopWidget toplevelTable), subForest = children'}
-		]}
-	where
-	newChildOf parent (Node {rootLabel = adata, subForest = children}) = do
+instance BuildFromAttributeTree Gtk.Widget where
+	buildFromAttributeTree ctx (Node {rootLabel = adata, subForest = children}) = do
 		s <- single adata
 		case s of
 			Just (gtk, me) -> do
+				children' <- mapM (buildFromAttributeTree ctx) children
 				-- Currently acting like VBox. Need better layout algorithm
-				y <- length <$> Gtk.containerGetChildren (Gtk.castToContainer parent)
-				Gtk.tableAttachDefaults (Gtk.castToTable parent) gtk 0 1 y (y+1)
-				children' <- mapM (newChildOf gtk) children
+				zipWithM_ (\(Node {rootLabel = (_,w)}) y -> Gtk.tableAttachDefaults (Gtk.castToTable gtk) (unwrap w) 0 1 y (y+1)) (filter (not . isSectionNode) children') [0..]
 				return $ Node {rootLabel = (adata, me), subForest = children'}
-			_ -> do
-				let adata' = adata {chunk = children}
+			_ ->
+				let adata' = adata {chunk = children} in -- TODO
 				return $ Node {rootLabel = (adata', nopWidget (error "cannot unwrap pseudo-widget")), subForest = []}
+		where
+		isSectionNode (Node {rootLabel = (Section {},_)}) = True
+		isSectionNode _ = False
 
-	single (Grid {rows = rows, cols = cols}) = do
-		t <- fmap Gtk.castToWidget $ Gtk.tableNew rows cols False
-		return $ Just (t, nopWidget t)
-	single (Button {_id = _id, text = text}) = do
-		b <- Gtk.buttonNewWithLabel $ text mempty -- TODO
-		Gtk.widgetSetName b _id
-		return $ Just (Gtk.castToWidget b, gtkButtonToWidget b)
-	single (Label {text = text}) = do
-		l <- Gtk.labelNew $ Just $ text mempty -- TODO
-		return $ Just (Gtk.castToWidget l, gtkLabelToWidget l)
-	single (Section {}) = return Nothing
+		single (Grid {rows = rows, cols = cols}) = do
+			t <- Gtk.tableNew rows cols False
+			return $ Just (Gtk.castToWidget t, gtkTableToWidget t)
+		single (Button {_id = _id, text = text}) = do
+			b <- Gtk.buttonNewWithLabel $ text mempty -- TODO
+			Gtk.widgetSetName b _id
+			return $ Just (Gtk.castToWidget b, gtkButtonToWidget b)
+		single (Label {text = text}) = do
+			l <- Gtk.labelNew $ Just $ text mempty -- TODO
+			return $ Just (Gtk.castToWidget l, gtkLabelToWidget l)
+		single (Section {}) = return Nothing
+
+createGtkFromViewData :: Tree AttributeData -> IO (GUI Gtk.Widget)
+createGtkFromViewData tree@(Node {
+                       rootLabel = g@(Grid {text=title}),
+                       subForest = children}) = do
+	toplevel <- Gtk.windowNew
+	let toplevelWidget = gtkWindowToWidget toplevel
+	Gtk.set toplevel [ Gtk.windowTitle Gtk.:= title mempty ] -- TODO
+
+	widgetTree@(Node {rootLabel = (_, toplevelTable)}) <- buildFromAttributeTree undefined tree
+	addChild toplevelWidget toplevelTable
+
+	return $ GUI mempty $ Node {rootLabel = (g,toplevelWidget), subForest = [widgetTree]}
 
 main = do
 	Gtk.initGUI
@@ -259,7 +294,8 @@ main = do
 	let Just (_,adder) = gui `getElementById` "adder"
 	Gtk.on (Gtk.castToButton $ unwrap adder) Gtk.buttonActivated $ do
 		gui@(GUI ctx _) <- readIORef guiRef
-		writeIORef guiRef =<< update gui (ListInsertMessage ["items"] 0 (Map.fromList [("text",StringCtx "new")]))
+		--writeIORef guiRef =<< update gui (ListInsertMessage ["items"] 0 (Map.fromList [("text",StringCtx "new")]))
+		writeIORef guiRef =<< update gui (ReplaceMessage ["items"] (ListCtx [Map.fromList [("text",StringCtx "new")]]))
 
 	Gtk.on (unwrap window) Gtk.unrealize $ do
 		Gtk.mainQuit
